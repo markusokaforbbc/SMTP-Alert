@@ -1,0 +1,116 @@
+#!/usr/bin/python3
+
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import dateutil.parser
+import subprocess
+import time
+from datetime import datetime
+import smtplib
+import sys
+import os
+import traceback
+
+SMTP_FROM_ADDR = "markus.okafor@bbc.co.uk"
+SMTP_TO_ADDRS = [ "markus.okafor@bbc.co.uk" ]
+SMTP_HOSTNAME = "markus.okafor@bbc.co.uk"
+
+AWS_PROFILE = "S3Read"
+S3_BUCKET = "s3://live-bbc-wolftech-htmlbackup"
+LOCAL_FOLDER = "E:\TomTest\Live-DRTest"
+
+def process_syncdryrun():
+    print("Attempting sync at: " + datetime.now().isoformat())
+    cmd = 'aws s3 sync --dryrun --profile {} --delete --exclude web.config --exact-timestamps {} {}'.format(AWS_PROFILE, S3_BUCKET, LOCAL_FOLDER)
+    try:
+        output = subprocess.check_output(cmd, shell=True, encoding='utf-8')
+    except subprocess.CalledProcessError:
+        print("ERROR: command '{}' failed!".format(cmd))
+        return None
+
+    lines = output.split('\n')
+    lines = list( filter(lambda l: len(l) > 0, lines) )
+
+    n_lines = len(lines)
+    print(n_lines)
+    return n_lines
+
+def process_sync():
+    n_lines = process_syncdryrun()
+    if n_lines == 0 and os.path.exists("Live-S3DRDownload-Timestamp.txt"):
+        try:
+            file = open("Live-S3DRDownload-Timestamp.txt", mode = "r")
+        except OSError:
+            print("ERROR: failed to open S3Download-Timestamp.txt for reading; check permissions")
+            return 
+        
+        #timestamp = file.read()
+        #file.close()
+        
+        lastgoodtime = dateutil.parser.isoparse(file.read())
+
+        now = datetime.now()
+        hour = now.hour
+
+        timediff = now - lastgoodtime
+
+        if hour < 22 and hour > 7 and timediff.seconds // 3600 >= 4:
+            print("Sending alert!")
+            send_email()
+    else:
+        try:
+            file = open("Live-S3DRDownload-Timestamp.txt", mode = 'w+')
+        except OSError:
+            print("ERROR: failed to open Live-S3Download-Timestamp.txt for writing; check permissions")
+            return
+
+        file.write(datetime.now().isoformat())
+        cmd = 'aws s3 sync --profile {} --delete --exclude web.config --exact-timestamps {} {}'.format(AWS_PROFILE, S3_BUCKET, LOCAL_FOLDER)
+        
+        try:
+            output = subprocess.check_output(cmd, shell=True, encoding='utf-8')
+        except subprocess.CalledProcessError:
+            print("ERROR: command '{}' failed!".format(cmd))
+            return
+        
+        file.close()
+
+def send_email():
+    my_cmd = os.path.basename(sys.argv[0])
+
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = '*** TESTING *** ALERT - {} - Error - Please Check'.format(my_cmd)
+    msg['From'] = SMTP_FROM_ADDR
+    msg['To'] = ', '.join(SMTP_TO_ADDRS)
+
+    # Creates the plain-text and HTML version of your message
+    html_str = '<h3>*** TESTING *** ALERT - {} - Error - Please Check - more here soon</h3>'.format(my_cmd)
+   
+    # Turn these into plain/html MIMEText objects
+    part1 = MIMEText(html_str, 'plain')
+    part2 = MIMEText(html_str, 'html')
+
+    # Add HTML/plain-text parts to MIMEMultipart message
+    # The email client will try to render the last part firs
+    msg.attach(part1)
+    msg.attach(part2)
+
+    # Create secure connection with server and send email
+    try:
+        s = smtplib.SMTP(SMTP_HOSTNAME)
+        s.sendmail(SMTP_FROM_ADDR, SMTP_TO_ADDRS, msg.as_string())
+        s.quit()
+        print ("Email Sent")
+    except smtplib.SMTPException:
+        print(FAIL + "[-] Error: unable to send email to ", SMTP_TO_ADDRS, ENDC)
+
+def main():
+    try:
+        process_sync()
+    except Exception as e:
+        with open('log.txt', 'a') as f:
+            f.write(str(e))
+            f.write(traceback.format_exc())
+            
+if __name__ == '__main__':
+    main()
